@@ -69,20 +69,13 @@ bool VehicleDataParser::extractVehicleData(std::vector<VehicleData>& tokens) {
     return true;
 }
 
-bool messageQueueSend(const VehicleData& data) {
-    key_t key = MSG_QUEUE_KEY;
-
-    int msgid = msgget(key, IPC_CREAT | 0666);  //0666 is for permission
-    if (msgid == -1) {
-        perror("msgget");
-        return false;
-    }
+bool messageQueueSend(int msgId, const VehicleData& data) {
 
     Msg msg;
     msg.type = 1;
     std::snprintf(msg.text, sizeof(msg.text), "ID:%d,Time:%s,Speed:%.2f,Engine:%s,ErrorCode:%d",
         data.vehicleId, data.timestamp.c_str(), data.speed, data.engineOn ? "ON" : "OFF", static_cast<int>(data.errorCode));
-    if (msgsnd(msgid, &msg, sizeof(msg.text), 0) == -1) {
+    if (msgsnd(msgId, &msg, sizeof(msg.text), 0) == -1) {
         perror("msgsnd");
         return false;
     }
@@ -113,6 +106,8 @@ bool sendEmptyTerminationMessage() {
 
 sendStatus VehicleDataParser::parseAndSend() {
     // implementing message queue and sending data to receiver
+    key_t key = MSG_QUEUE_KEY;
+
     std::vector<VehicleData> vehicleDataList;
     if (!extractVehicleData(vehicleDataList)) {
         std::cerr << "Failed to extract vehicle data\n";
@@ -124,8 +119,14 @@ sendStatus VehicleDataParser::parseAndSend() {
         return sendStatus::E_Error;
     }
 
+    int msgid = msgget(key, IPC_CREAT | 0666);
+    if (msgid == -1) {
+        perror("msgget");
+        return sendStatus::E_Error;
+    }
+
     for (const auto& data : vehicleDataList) {
-        if (!messageQueueSend(data)) {
+        if (!messageQueueSend(msgid, data)) {
             std::cerr << "unable to send mesage to receiverManager" <<std::endl;
             return sendStatus::E_Error;
         }
