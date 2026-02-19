@@ -40,7 +40,7 @@ struct VehicleData {
 class VehicleDataParser {
 public:
     static VehicleDataParser* getInstance();
-    bool extractVehicleData(std::vector<VehicleData>& tokens);
+    bool parseLine(const std::string& line, VehicleData& data);
     sendStatus parseAndSend();
 private:
     VehicleDataParser() = default;

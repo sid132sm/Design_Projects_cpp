@@ -6,65 +6,46 @@ VehicleDataParser* VehicleDataParser::getInstance() {
     return &instance;
 }
 
-bool VehicleDataParser::extractVehicleData(std::vector<VehicleData>& tokens) {
-    std::ifstream dataFile(DATA_FILE_PATH);
-    if (!dataFile.is_open()) {
-        std::cerr << "Failed to open data file : " << DATA_FILE_PATH << std::endl;
+
+bool VehicleDataParser::parseLine(const std::string& line, VehicleData& data) {
+    std::stringstream ss(line);
+    std::vector<std::string> fields;
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        fields.emplace_back(token);
+    }
+
+    if (fields.size() != 5) {
+        std::cerr << "Malformed line: expected 5 fields, got " << fields.size()
+                  << " -> " << line << std::endl;
         return false;
     }
 
-    std::string line;
-    size_t lineNumber = 0;
-    while (std::getline(dataFile, line)) {
-        ++lineNumber;
+    try {
+        data.vehicleId = std::stoi(fields[0]);
+        data.timestamp = fields[1];
+        data.speed = std::stod(fields[2]);
 
-        if (line.empty()) {
-            continue;
+        if (fields[3] == "1" || fields[3] == "ON" || fields[3] == "ENGINE_OK") {
+            data.engineOn = true;
+        } else if (fields[3] == "0" || fields[3] == "OFF") {
+            data.engineOn = false;
+        } else {
+            throw std::invalid_argument("invalid engineOn field");
         }
 
-        std::stringstream ss(line);
-        std::vector<std::string> fields;
-        std::string token;
-        while (std::getline(ss, token, ',')) {
-            fields.emplace_back(token);
+        if (fields[4] == "ENGINE_OK" || fields[4] == "OK") {
+            data.errorCode = EngineStatus::OK;
+        } else if (fields[4] == "ENGINE_OVERHEAT") {
+            data.errorCode = EngineStatus::E_Overheat;
+        } else if (fields[4] == "SENSOR_FAILURE" || fields[4] == "ENGINE_SENSOR_FAIL") {
+            data.errorCode = EngineStatus::E_SensorFailure;
+        } else {
+            data.errorCode = EngineStatus::E_Unknown;
         }
-
-        if (fields.size() != 5) {
-            std::cerr << "Skipping malformed line " << lineNumber
-                      << ": expected 5 fields, got " << fields.size()
-                      << " -> " << line << std::endl;
-            continue;
-        }
-
-        try {
-            VehicleData data;
-            data.vehicleId = std::stoi(fields[0]);
-            data.timestamp = fields[1];
-            data.speed = std::stod(fields[2]);
-
-            if (fields[3] == "1" || fields[3] == "ON" || fields[3] == "ENGINE_OK") {
-                data.engineOn = true;
-            } else if (fields[3] == "0" || fields[3] == "OFF") {
-                data.engineOn = false;
-            } else {
-                throw std::invalid_argument("invalid engineOn field");
-            }
-
-            if (fields[4] == "ENGINE_OK" || fields[4] == "OK") {
-                data.errorCode = EngineStatus::OK;
-            } else if (fields[4] == "ENGINE_OVERHEAT") {
-                data.errorCode = EngineStatus::E_Overheat;
-            } else if (fields[4] == "SENSOR_FAILURE" || fields[4] == "ENGINE_SENSOR_FAIL") {
-                data.errorCode = EngineStatus::E_SensorFailure;
-            } else {
-                data.errorCode = EngineStatus::E_Unknown;
-            }
-
-            tokens.emplace_back(data);
-        } catch (const std::exception& ex) {
-            std::cerr << "Skipping malformed line " << lineNumber
-                      << ": " << ex.what() << " -> " << line << std::endl;
-        }
+    } catch (const std::exception& ex) {
+        std::cerr << "Malformed line: " << ex.what() << " -> " << line << std::endl;
+        return false;
     }
     return true;
 }
@@ -108,30 +89,41 @@ sendStatus VehicleDataParser::parseAndSend() {
     // implementing message queue and sending data to receiver
     key_t key = MSG_QUEUE_KEY;
 
-    std::vector<VehicleData> vehicleDataList;
-    if (!extractVehicleData(vehicleDataList)) {
-        std::cerr << "Failed to extract vehicle data\n";
+    std::ifstream dataFile(DATA_FILE_PATH);
+    if (!dataFile.is_open()) {
+        std::cerr << "Failed to open data file : " << DATA_FILE_PATH << std::endl;
         return sendStatus::E_Error;
     }
 
-    if (vehicleDataList.empty()) {
-        std::cerr << "No vehicle data to send\n";
-        return sendStatus::E_Error;
-    }
 
     int msgid = msgget(key, IPC_CREAT | 0666);
     if (msgid == -1) {
         perror("msgget");
         return sendStatus::E_Error;
     }
-
-    for (const auto& data : vehicleDataList) {
+    
+    std::string line;
+    size_t lineNumber = 0;
+    size_t validCount = 0;
+    size_t invalidCount = 0;
+    while (std::getline(dataFile, line)) {
+        ++lineNumber;
+        if (line.empty()) {
+            continue;
+        }
+        VehicleData data;
+        if (!parseLine(line, data)) {
+            std::cerr << "Skipping line " << lineNumber << " due to parse error\n";
+            ++invalidCount;
+            continue;
+        }
         if (!messageQueueSend(msgid, data)) {
-            std::cerr << "unable to send mesage to receiverManager" <<std::endl;
+            std::cerr << "Unable to send message for line " << lineNumber << std::endl;
             return sendStatus::E_Error;
         }
-        std::cout << "data sent to receiverManager successfully" << std::endl;
+        ++validCount;
     }
+    std::cout << "Finished sending messages. Valid lines: " << validCount << ", Invalid lines: " << invalidCount << std::endl;
 
     if (!sendEmptyTerminationMessage()) {
         std::cerr << "unable to send termination message to receiverManager" << std::endl;
